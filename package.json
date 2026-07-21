@@ -1,0 +1,11 @@
+{
+  "name": "clipticket-root",
+  "private": true,
+  "workspaces": ["clipticket"],
+  "scripts": {
+    "dev": "npm run dev --workspace clipticket",
+    "build": "npm run build --workspace clipticket",
+    "start": "npm run start --workspace clipticket",
+    "lint": "npm run lint --workspace clipticket"
+  }
+}

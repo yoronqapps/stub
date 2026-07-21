@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  border-color: theme("colors.ink-line");
+}
+
+html,
+body {
+  background: theme("colors.ink");
+  color: theme("colors.paper");
+}
+
+body {
+  background-image: theme("backgroundImage.grain");
+  background-size: theme("backgroundSize.grain");
+}
+
+::selection {
+  background: theme("colors.brass");
+  color: theme("colors.ink");
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: theme("colors.ink-line");
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: theme("colors.brass");
+}
+
+:focus-visible {
+  outline: 2px solid theme("colors.brass-bright");
+  outline-offset: 2px;
+}
+
+/* Perforated tear-line between ticket stub and main body */
+.perforation {
+  position: relative;
+  border-top: 2px dashed theme("colors.ink");
+}
+.perforation::before,
+.perforation::after {
+  content: "";
+  position: absolute;
+  top: -9px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: theme("colors.ink");
+}
+.perforation::before {
+  left: -9px;
+}
+.perforation::after {
+  right: -9px;
+}
+
+.ticket-card {
+  background: theme("colors.paper");
+  color: theme("colors.ink");
+}
+
+.stamp-ring {
+  border: 2px solid currentColor;
+  border-radius: 999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
