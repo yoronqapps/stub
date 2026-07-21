@@ -1,16 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import QRCode from "qrcode";
-import { supabase, FILES_BUCKET, MAX_FILE_BYTES } from "@/lib/supabaseClient";
-import { normalizeRoomCode, isValidRoomCode } from "@/lib/roomCode";
 import {
-  EXPIRY_OPTIONS,
+  buildRoomLink,
+  isValidRoomAccessKey,
+  isValidRoomCode,
+  normalizeRoomAccessKey,
+  normalizeRoomCode,
+} from "@/lib/roomCode";
+import {
   DEFAULT_EXPIRY_HOURS,
+  EXPIRY_OPTIONS,
   expiryFromNow,
   formatTimeLeft,
 } from "@/lib/expiry";
+import {
+  createSupabaseClient,
+  FILES_BUCKET,
+  MAX_FILE_BYTES,
+} from "@/lib/supabaseClient";
 
 type RoomRow = {
   code: string;
@@ -38,7 +48,10 @@ function formatBytes(bytes: number): string {
 
 export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
   const code = normalizeRoomCode(decodeURIComponent(rawCode || ""));
-  const valid = isValidRoomCode(code);
+  const validCode = isValidRoomCode(code);
+
+  const [roomKey, setRoomKey] = useState("");
+  const validRoomKey = isValidRoomAccessKey(roomKey);
 
   const [loading, setLoading] = useState(true);
   const [room, setRoom] = useState<RoomRow | null>(null);
@@ -55,112 +68,126 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // ---- Bootstrap room + realtime subscription ----
+  const roomClient = useMemo(() => {
+    if (!validCode || !validRoomKey) return null;
+    return createSupabaseClient({ roomCode: code, roomKey });
+  }, [code, roomKey, validCode, validRoomKey]);
+
   useEffect(() => {
-    if (!valid) {
+    if (typeof window === "undefined") return;
+
+    const syncKeyFromHash = () => {
+      const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const key = normalizeRoomAccessKey(params.get("k") || "");
+      setRoomKey(key);
+    };
+
+    syncKeyFromHash();
+    window.addEventListener("hashchange", syncKeyFromHash);
+
+    return () => window.removeEventListener("hashchange", syncKeyFromHash);
+  }, []);
+
+  const refreshRoomSnapshot = useCallback(async () => {
+    if (!roomClient) return;
+
+    setConn("connecting");
+
+    const { data: existing, error: fetchErr } = await roomClient
+      .from("rooms")
+      .select("*")
+      .eq("code", code)
+      .maybeSingle();
+
+    if (fetchErr) {
+      setConn("offline");
+      setErrorMsg("Couldn't reach the clipboard service. Check your connection and refresh.");
       setLoading(false);
       return;
     }
-    let cancelled = false;
 
-    async function bootstrap() {
-      const { data: existing, error: fetchErr } = await supabase
+    let roomRow = existing as RoomRow | null;
+
+    if (!roomRow) {
+      const { data: created, error: insertErr } = await roomClient
         .from("rooms")
+        .insert({
+          code,
+          access_key: roomKey,
+          text_content: "",
+          expires_at: expiryFromNow(DEFAULT_EXPIRY_HOURS),
+        })
         .select("*")
-        .eq("code", code)
-        .maybeSingle();
+        .single();
 
-      if (fetchErr) {
-        if (!cancelled) setErrorMsg("Couldn't reach the clipboard service. Check your connection and refresh.");
+      if (insertErr) {
+        setConn("offline");
+        if (insertErr.code === "23505") {
+          setErrorMsg("This ticket exists, but this key cannot open it. Use the original full ticket link.");
+        } else {
+          setErrorMsg("Couldn't create this ticket securely. Try refreshing.");
+        }
         setLoading(false);
         return;
       }
 
-      let roomRow = existing as RoomRow | null;
-
-      if (!roomRow) {
-        const { data: created, error: insertErr } = await supabase
-          .from("rooms")
-          .insert({
-            code,
-            text_content: "",
-            expires_at: expiryFromNow(DEFAULT_EXPIRY_HOURS),
-          })
-          .select()
-          .single();
-
-        if (insertErr) {
-          if (!cancelled) setErrorMsg("Couldn't create this ticket. It may already be in use — try refreshing.");
-          setLoading(false);
-          return;
-        }
-        roomRow = created as RoomRow;
-      }
-
-      if (cancelled) return;
-      setRoom(roomRow);
-      setText(roomRow.text_content || "");
-      lastSentContent.current = roomRow.text_content || "";
-
-      const { data: fileRows } = await supabase
-        .from("room_files")
-        .select("*")
-        .eq("room_code", code)
-        .order("created_at", { ascending: false });
-
-      if (!cancelled && fileRows) setFiles(fileRows as FileRow[]);
-      if (!cancelled) setLoading(false);
+      roomRow = created as RoomRow;
     }
 
-    bootstrap();
+    setRoom(roomRow);
+    setText(roomRow.text_content || "");
+    lastSentContent.current = roomRow.text_content || "";
 
-    const channel = supabase
-      .channel(`room-${code}`)
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "rooms", filter: `code=eq.${code}` },
-        (payload) => {
-          const updated = payload.new as RoomRow;
-          setRoom(updated);
-          if (updated.text_content !== lastSentContent.current) {
-            setText(updated.text_content || "");
-            lastSentContent.current = updated.text_content || "";
-          }
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "room_files", filter: `room_code=eq.${code}` },
-        (payload) => {
-          const row = payload.new as FileRow;
-          setFiles((prev) => (prev.some((f) => f.id === row.id) ? prev : [row, ...prev]));
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "DELETE", schema: "public", table: "room_files", filter: `room_code=eq.${code}` },
-        (payload) => {
-          const row = payload.old as FileRow;
-          setFiles((prev) => prev.filter((f) => f.id !== row.id));
-        }
-      )
-      .subscribe((status) => {
-        if (status === "SUBSCRIBED") setConn("live");
-        else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-          setConn("offline");
-        }
-      });
+    const { data: fileRows, error: filesErr } = await roomClient
+      .from("room_files")
+      .select("*")
+      .eq("room_code", code)
+      .order("created_at", { ascending: false });
+
+    if (filesErr) {
+      setConn("offline");
+      setErrorMsg("Room opened, but files are temporarily unavailable. Refresh in a moment.");
+      setLoading(false);
+      return;
+    }
+
+    setFiles((fileRows || []) as FileRow[]);
+    setConn("live");
+    setLoading(false);
+  }, [roomClient, code, roomKey]);
+
+  // ---- Bootstrap + polling ----
+  useEffect(() => {
+    if (!validCode) {
+      setLoading(false);
+      return;
+    }
+    if (!validRoomKey || !roomClient) {
+      setLoading(false);
+      return;
+    }
+
+    let mounted = true;
+
+    const runRefresh = async () => {
+      if (!mounted) return;
+      await refreshRoomSnapshot();
+    };
+
+    runRefresh();
+    const intervalId = window.setInterval(runRefresh, 2000);
 
     return () => {
-      cancelled = true;
-      supabase.removeChannel(channel);
+      mounted = false;
+      window.clearInterval(intervalId);
+      if (debounceTimer.current) window.clearTimeout(debounceTimer.current);
     };
-  }, [code, valid]);
+  }, [validCode, validRoomKey, roomClient, refreshRoomSnapshot]);
 
   // ---- QR code for the room link ----
   useEffect(() => {
-    if (!valid || typeof window === "undefined") return;
-    const url = `${window.location.origin}/r/${code}`;
+    if (!validCode || !validRoomKey || typeof window === "undefined") return;
+    const url = buildRoomLink(window.location.origin, code, roomKey);
     QRCode.toDataURL(url, {
       margin: 1,
       width: 220,
@@ -168,37 +195,41 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
     })
       .then(setQrDataUrl)
       .catch(() => setQrDataUrl(null));
-  }, [code, valid]);
+  }, [code, roomKey, validCode, validRoomKey]);
 
   // ---- Debounced text sync ----
   const handleTextChange = useCallback(
     (value: string) => {
+      if (!roomClient) return;
       setText(value);
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       debounceTimer.current = setTimeout(async () => {
         lastSentContent.current = value;
-        await supabase
+        await roomClient
           .from("rooms")
           .update({ text_content: value, updated_at: new Date().toISOString() })
           .eq("code", code);
       }, 500);
     },
-    [code]
+    [roomClient, code]
   );
 
   // ---- File upload ----
   async function uploadFiles(fileList: FileList | File[]) {
+    if (!roomClient) return;
     setErrorMsg(null);
+
     for (const file of Array.from(fileList)) {
       if (file.size > MAX_FILE_BYTES) {
         setErrorMsg(`"${file.name}" is over the 100MB limit and wasn't uploaded.`);
         continue;
       }
+
       const tempKey = `${file.name}-${file.size}-${Date.now()}`;
       setUploading((prev) => ({ ...prev, [tempKey]: true }));
       const path = `${code}/${Date.now()}-${file.name}`;
 
-      const { error: uploadErr } = await supabase.storage
+      const { error: uploadErr } = await roomClient.storage
         .from(FILES_BUCKET)
         .upload(path, file, { upsert: false });
 
@@ -212,12 +243,16 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
         continue;
       }
 
-      await supabase.from("room_files").insert({
+      const { error: rowErr } = await roomClient.from("room_files").insert({
         room_code: code,
         file_name: file.name,
         storage_path: path,
         size_bytes: file.size,
       });
+
+      if (rowErr) {
+        setErrorMsg(`"${file.name}" uploaded, but metadata sync failed.`);
+      }
 
       setUploading((prev) => {
         const next = { ...prev };
@@ -225,27 +260,41 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
         return next;
       });
     }
+
+    await refreshRoomSnapshot();
   }
 
   async function handleDeleteFile(f: FileRow) {
+    if (!roomClient) return;
     setFiles((prev) => prev.filter((x) => x.id !== f.id));
-    await supabase.storage.from(FILES_BUCKET).remove([f.storage_path]);
-    await supabase.from("room_files").delete().eq("id", f.id);
+    await roomClient.storage.from(FILES_BUCKET).remove([f.storage_path]);
+    await roomClient.from("room_files").delete().eq("id", f.id);
   }
 
-  function getDownloadUrl(path: string): string {
-    const { data } = supabase.storage.from(FILES_BUCKET).getPublicUrl(path);
-    return data.publicUrl;
+  async function handleDownload(path: string) {
+    if (!roomClient) return;
+    const { data, error } = await roomClient.storage
+      .from(FILES_BUCKET)
+      .createSignedUrl(path, 120);
+
+    if (error || !data?.signedUrl) {
+      setErrorMsg("Couldn't generate a secure download link. Try again.");
+      return;
+    }
+
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
   }
 
   async function handleExpiryChange(hours: number) {
+    if (!roomClient) return;
     const expires_at = expiryFromNow(hours);
-    await supabase.from("rooms").update({ expires_at }).eq("code", code);
+    await roomClient.from("rooms").update({ expires_at }).eq("code", code);
     setRoom((prev) => (prev ? { ...prev, expires_at } : prev));
   }
 
   function handleCopyLink() {
-    const url = `${window.location.origin}/r/${code}`;
+    if (typeof window === "undefined" || !validRoomKey) return;
+    const url = buildRoomLink(window.location.origin, code, roomKey);
     navigator.clipboard.writeText(url).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
@@ -253,7 +302,7 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
   }
 
   // ---- Invalid code screen ----
-  if (!valid) {
+  if (!validCode) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center px-6 text-center">
         <p className="mb-3 font-mono text-xs uppercase tracking-[0.3em] text-brass">Clipticket</p>
@@ -272,11 +321,29 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
     );
   }
 
+  if (!validRoomKey) {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center px-6 text-center">
+        <p className="mb-3 font-mono text-xs uppercase tracking-[0.3em] text-brass">Clipticket</p>
+        <h1 className="mb-3 text-2xl font-semibold text-paper">This ticket needs its security key</h1>
+        <p className="mb-8 max-w-md text-sm text-fog">
+          Open this room using the full ticket URL shared by its creator. The secure key lives in the link fragment after #k=.
+        </p>
+        <Link
+          href="/"
+          className="rounded-md bg-brass px-5 py-2.5 font-mono text-xs font-semibold uppercase tracking-widest text-ink hover:bg-brass-bright"
+        >
+          Back to the counter
+        </Link>
+      </main>
+    );
+  }
+
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center px-6">
         <p className="font-mono text-xs uppercase tracking-[0.3em] text-brass animate-pulse">
-          Punching your ticket…
+          Punching your ticket...
         </p>
       </main>
     );
@@ -284,7 +351,6 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
 
   return (
     <main className="mx-auto min-h-screen max-w-3xl px-4 py-10 sm:px-6">
-      {/* Header / ticket stub */}
       <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <Link href="/" className="font-mono text-[10px] uppercase tracking-[0.3em] text-brass hover:text-brass-bright">
@@ -308,7 +374,7 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
                   conn === "live" ? "bg-stamp-bright" : conn === "connecting" ? "bg-fog" : "bg-rust"
                 }`}
               />
-              {conn === "live" ? "connected" : conn === "connecting" ? "connecting" : "offline"}
+              {conn === "live" ? "live" : conn === "connecting" ? "syncing" : "offline"}
             </span>
           </div>
           <p className="mt-1 font-mono text-xs text-fog">{formatTimeLeft(room?.expires_at ?? null)}</p>
@@ -326,7 +392,7 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
             onClick={handleCopyLink}
             className="rounded-md border border-ink-line px-4 py-2.5 font-mono text-xs font-semibold uppercase tracking-widest text-paper transition hover:border-brass hover:text-brass"
           >
-            {copied ? "Copied" : "Copy link"}
+            {copied ? "Copied" : "Copy secure link"}
           </button>
         </div>
       </header>
@@ -337,7 +403,6 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
         </div>
       )}
 
-      {/* Text pad */}
       <section className="mb-6">
         <label htmlFor="clip-text" className="mb-2 block font-mono text-[10px] uppercase tracking-[0.25em] text-fog">
           Shared text
@@ -346,12 +411,11 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
           id="clip-text"
           value={text}
           onChange={(e) => handleTextChange(e.target.value)}
-          placeholder="Type or paste anything — it lands on every device with this ticket, instantly."
+          placeholder="Type or paste anything and it syncs across devices with this secure link."
           className="h-56 w-full resize-y rounded-xl border border-ink-line bg-ink-soft px-4 py-3 font-mono text-sm leading-relaxed text-paper placeholder:text-fog/50 focus:border-brass focus:outline-none"
         />
       </section>
 
-      {/* File drop zone */}
       <section className="mb-6">
         <div className="mb-2 flex items-center justify-between">
           <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-fog">Files</span>
@@ -392,7 +456,7 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
           <ul className="mt-3 space-y-1">
             {Object.keys(uploading).map((k) => (
               <li key={k} className="font-mono text-xs text-fog animate-pulse">
-                Uploading {k.split("-")[0]}…
+                Uploading {k.split("-")[0]}...
               </li>
             ))}
           </ul>
@@ -407,13 +471,12 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
                   <p className="font-mono text-[10px] text-fog">{formatBytes(f.size_bytes)}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <a
-                    href={getDownloadUrl(f.storage_path)}
-                    download={f.file_name}
+                  <button
+                    onClick={() => handleDownload(f.storage_path)}
                     className="rounded-md border border-ink-line px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest text-paper hover:border-stamp hover:text-stamp-bright"
                   >
                     Download
-                  </a>
+                  </button>
                   <button
                     onClick={() => handleDeleteFile(f)}
                     aria-label={`Delete ${f.file_name}`}
@@ -428,7 +491,6 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
         )}
       </section>
 
-      {/* Expiry */}
       <section>
         <span className="mb-2 block font-mono text-[10px] uppercase tracking-[0.25em] text-fog">
           Keep this ticket for

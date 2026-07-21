@@ -13,11 +13,27 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  realtime: {
-    params: { eventsPerSecond: 10 },
-  },
-});
+type RoomHeaderInput = {
+  roomCode?: string;
+  roomKey?: string;
+};
+
+export function createSupabaseClient(headers?: RoomHeaderInput) {
+  const globalHeaders: Record<string, string> = {};
+
+  if (headers?.roomCode) {
+    globalHeaders["x-room-code"] = headers.roomCode;
+  }
+  if (headers?.roomKey) {
+    globalHeaders["x-room-key"] = headers.roomKey;
+  }
+
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    global: {
+      headers: globalHeaders,
+    },
+  });
+}
 
 export const FILES_BUCKET = "clipticket-files";
 export const MAX_FILE_BYTES = 100 * 1024 * 1024; // 100MB, see README for why

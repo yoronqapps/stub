@@ -2,7 +2,14 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { generateRoomCode, normalizeRoomCode, isValidRoomCode } from "@/lib/roomCode";
+import {
+  buildRoomLink,
+  generateRoomAccessKey,
+  generateRoomCode,
+  isValidRoomAccessKey,
+  isValidRoomCode,
+  parseTicketInput,
+} from "@/lib/roomCode";
 
 export default function LandingPage() {
   const router = useRouter();
@@ -11,17 +18,19 @@ export default function LandingPage() {
 
   function handleNewTicket() {
     const code = generateRoomCode();
-    router.push(`/r/${code}`);
+    const key = generateRoomAccessKey();
+    const url = buildRoomLink(window.location.origin, code, key);
+    router.push(url.replace(window.location.origin, ""));
   }
 
   function handleJoin(e: React.FormEvent) {
     e.preventDefault();
-    const normalized = normalizeRoomCode(joinInput);
-    if (!isValidRoomCode(normalized)) {
-      setJoinError("That ticket number doesn't look right — check the code and try again.");
+    const { code, key } = parseTicketInput(joinInput);
+    if (!isValidRoomCode(code) || !key || !isValidRoomAccessKey(key)) {
+      setJoinError("Paste the full ticket link (including #k=...) to open this clipboard securely.");
       return;
     }
-    router.push(`/r/${normalized}`);
+    router.push(`/r/${code}#k=${key}`);
   }
 
   return (
@@ -88,8 +97,8 @@ export default function LandingPage() {
                   setJoinInput(e.target.value);
                   setJoinError(null);
                 }}
-                placeholder="XXXX-XXXX"
-                maxLength={9}
+                placeholder="Paste full ticket link"
+                maxLength={500}
                 className="w-full rounded-md border border-ink/15 bg-white/40 px-3 py-2.5 font-mono text-sm uppercase tracking-widest text-ink placeholder:text-ink/30 focus:border-stamp focus:bg-white/70 focus:outline-none"
               />
               <button
@@ -106,8 +115,8 @@ export default function LandingPage() {
         </div>
 
         <p className="mt-8 text-center font-mono text-[11px] leading-relaxed text-fog/70">
-          Anyone with the code can open the clipboard — treat it like a
-          shared note, not a vault. Tickets expire on the schedule you pick.
+          Security mode is on: access now requires the full ticket link,
+          including its hidden room key fragment.
         </p>
       </div>
     </main>
