@@ -67,6 +67,8 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
   const lastSentContent = useRef<string>("");
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const isTypingRef = useRef(false);
 
   const roomClient = useMemo(() => {
     if (!validCode || !validRoomKey) return null;
@@ -135,7 +137,12 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
     }
 
     setRoom(roomRow);
-    setText(roomRow.text_content || "");
+    const nextText = roomRow.text_content || "";
+    const isActiveEdit = isTypingRef.current && textAreaRef.current === document.activeElement;
+
+    if (!isActiveEdit || nextText === lastSentContent.current) {
+      setText(nextText);
+    }
     lastSentContent.current = roomRow.text_content || "";
 
     const { data: fileRows, error: filesErr } = await roomClient
@@ -409,7 +416,14 @@ export default function ClipboardRoom({ rawCode }: { rawCode: string }) {
         </label>
         <textarea
           id="clip-text"
+          ref={textAreaRef}
           value={text}
+          onFocus={() => {
+            isTypingRef.current = true;
+          }}
+          onBlur={() => {
+            isTypingRef.current = false;
+          }}
           onChange={(e) => handleTextChange(e.target.value)}
           placeholder="Type or paste anything and it syncs across devices with this secure link."
           className="h-56 w-full resize-y rounded-xl border border-ink-line bg-ink-soft px-4 py-3 font-mono text-sm leading-relaxed text-paper placeholder:text-fog/50 focus:border-brass focus:outline-none"

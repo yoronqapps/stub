@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Clipticket icon">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8dfaa"/>
+      <stop offset="100%" stop-color="#c58a35"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="58" fill="#111216"/>
+  <rect x="40" y="54" width="176" height="148" rx="26" fill="url(#g)"/>
+  <path d="M40 98h176" stroke="#111216" stroke-opacity="0.2" stroke-width="3" stroke-dasharray="6 8"/>
+  <path d="M66 92h124" stroke="#111216" stroke-opacity="0.18" stroke-width="2" stroke-dasharray="3 10"/>
+  <rect x="66" y="78" width="118" height="18" rx="9" fill="#111216" opacity="0.92"/>
+  <rect x="66" y="112" width="92" height="18" rx="9" fill="#111216" opacity="0.76"/>
+  <rect x="66" y="146" width="106" height="18" rx="9" fill="#111216" opacity="0.62"/>
+  <rect x="178" y="70" width="22" height="22" rx="11" fill="#111216"/>
+  <path d="M184 80l5 5 10-12" fill="none" stroke="#f8dfaa" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
